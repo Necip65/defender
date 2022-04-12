@@ -1,0 +1,1890 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>thin instance wrapper</title>
+
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/cannon.js"></script>
+
+    <script src="https://preview.babylonjs.com/earcut.min.js"></script>
+    <script src="https://raw.githack.com/opentypejs/opentype.js/master/dist/opentype.min.js"></script>
+    <!-- <script src="https://preview.babylonjs.com/proceduralTexturesLibrary/babylonjs.proceduralTextures.min.js"></script> -->
+
+    <style>
+        html,
+        body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+
+        #fps {
+            position: absolute;
+            background-color: black;
+            /* border: 2px solid red; */
+            text-align: center;
+            font-size: 16px;
+            color: white;
+            top: 15px;
+            right: 10px;
+            width: 60px;
+            height: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="fps">0</div>
+
+    <script>
+        let SCREEN_WIDTH = window.innerWidth,
+            SCREEN_HEIGHT = window.innerHeight,
+            SCREEN_WIDTH_HALF = SCREEN_WIDTH / 2,
+            SCREEN_HEIGHT_HALF = SCREEN_HEIGHT / 2;
+
+        let canvas = document.getElementById("renderCanvas");
+        let divFps = document.getElementById("fps")
+
+        let max = 5 * 5;
+        let mesh_size = 0.8;
+
+        let PLAYER = 1
+        let OPONENT = 2
+        let BOSS_OPONENT = 3
+        let BULLET_PLAYER = 4
+        let BULLET_OPONENT = 5
+        //let WALL = 6
+        let STONE = 7
+        // let PLAYER_SHIELD = 8
+
+        // Poly-Type
+        // let TYPE_PLAYER = 0
+        let TYPE_OPONENT = 2
+        let TYPE_BOSS_OPONENT = 2
+        let TYPE_BULLET_PLAYER = 11
+        let TYPE_BULLET_OPONENT = 1; // 8
+        // let TYPE_WALL = 10
+        // let TYPE_STONE = 10           
+
+        let easterEgg = false;
+        let gameover = true;
+        let players_death = 0;
+        let player_fired = false;
+        // let oponent_fired = false;
+        let oponent_killed = 0;
+        let meshes = []
+        let m = null;
+
+        let desiredFps = 3;
+        let interval = 1000 / (10 * desiredFps);
+
+        const MAX_BEZIER_STEPS = 10;
+        const BEZIER_STEP_SIZE = 20.0;
+        const GLYPH_COORDS_SCALE = 0.001;
+
+        // class for converting path commands into point data
+        class TextMeshPolygon {
+            points = [];
+            children = [];
+            area = 0.0;
+
+            distance(p1, p2) {
+                const dx = p1.x - p2.x, dy = p1.y - p2.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+
+            lerp(p1, p2, t) {
+                return { x: (1 - t) * p1.x + t * p2.x, y: (1 - t) * p1.y + t * p2.y };
+            }
+
+            cross(p1, p2) {
+                return p1.x * p2.y - p1.y * p2.x;
+            }
+
+            moveTo(p) {
+                this.points.push(p);
+            }
+
+            lineTo(p) {
+                this.points.push(p);
+            }
+
+            close() {
+                let cur = this.points[this.points.length - 1];
+
+                this.points.forEach(next => {
+                    this.area += 0.5 * this.cross(cur, next);
+                    cur = next;
+                });
+            }
+
+            conicTo(p, p1) {
+                const p0 = this.points[this.points.length - 1];
+                const dist = this.distance(p0, p1) + this.distance(p1, p);
+                const steps = Math.max(2, Math.min(MAX_BEZIER_STEPS, dist / BEZIER_STEP_SIZE));
+
+                for (let i = 1; i <= steps; ++i) {
+                    const t = i / steps;
+                    this.points.push(this.lerp(this.lerp(p0, p1, t), this.lerp(p1, p, t), t));
+                }
+            }
+
+            cubicTo(p, p1, p2) {
+                const p0 = this.points[this.points.length - 1];
+                const dist = this.distance(p0, p1) + this.distance(p1, p2) + this.distance(p2, p);
+                const steps = Math.max(2, Math.min(MAX_BEZIER_STEPS, dist / BEZIER_STEP_SIZE));
+
+                for (let i = 1; i <= steps; ++i) {
+                    const t = i / steps;
+                    const a = this.lerp(this.lerp(p0, p1, t), this.lerp(p1, p2, t), t);
+                    const b = this.lerp(this.lerp(p1, p2, t), this.lerp(p2, p, t), t);
+                    this.points.push(this.lerp(a, b, t));
+                }
+            }
+
+            inside(p) {
+                const epsilon = 1e-6;
+                let count = 0, cur = this.points[this.points.length - 1];
+
+                this.points.forEach(next => {
+                    const p0 = (cur.y < next.y ? cur : next);
+                    const p1 = (cur.y < next.y ? next : cur);
+
+                    if (p0.y < p.y + epsilon && p1.y > p.y + epsilon) {
+                        if ((p1.x - p0.x) * (p.y - p0.y) > (p.x - p0.x) * (p1.y - p0.y)) {
+                            count++;
+                        }
+                    }
+
+                    cur = next;
+                });
+                return (count % 2) !== 0;
+            }
+        }
+
+        class TextMeshFont {
+            constructor(fontURL, material, doneCallback) {
+                this.doneCallback = doneCallback;
+                this.material = material;
+                this.glyphs = {};
+
+                opentype.load(fontURL, (err, font) => {
+                    if (err) {
+                        console.error(err);
+                        return;
+                    }
+
+                    if (!font) {
+                        console.error("Could not load font from", fontURL);
+                        return;
+                    }
+
+                    let fontName = "TextMeshFont";
+
+                    if (font.names && font.names.fontFamily && font.names.fontFamily.en) {
+                        fontName = font.names.fontFamily.en;
+                    }
+
+                    this.font = font;
+                    this.glyphsParent = new BABYLON.Mesh(fontName, scene);
+
+                    if (this.doneCallback) {
+                        this.doneCallback();
+                    }
+                });
+            }
+
+            createGlyph(ch) {
+                const glyph = this.font.charToGlyph(ch);
+
+                if (glyph && glyph.advanceWidth) {
+                    this.glyphs[ch] =
+                    {
+                        index: glyph.index,
+                        advanceWidth: glyph.advanceWidth
+                    };
+
+                    if (glyph.path && glyph.path.commands && glyph.path.commands.length) {
+                        const polys = [];
+                        glyph.path.commands.forEach(({ type, x, y, x1, y1, x2, y2 }) => {
+                            switch (type) {
+                                case 'M':
+                                    polys.push(new TextMeshPolygon());
+                                    polys[polys.length - 1].moveTo({ x, y });
+                                    break;
+                                case 'L':
+                                    polys[polys.length - 1].moveTo({ x, y });
+                                    break;
+                                case 'C':
+                                    polys[polys.length - 1].cubicTo({ x, y }, { x: x1, y: y1 }, { x: x2, y: y2 });
+                                    break;
+                                case 'Q':
+                                    polys[polys.length - 1].conicTo({ x, y }, { x: x1, y: y1 });
+                                    break;
+                                case 'Z':
+                                    polys[polys.length - 1].close();
+                                    break;
+                            }
+                        });
+
+                        // sort contours by descending area
+                        polys.sort((a, b) => Math.abs(b.area) - Math.abs(a.area));
+
+                        // classify contours to find holes and their 'parents'
+                        const root = [];
+
+                        for (let i = 0; i < polys.length; ++i) {
+                            let parent = null;
+                            for (let j = i - 1; j >= 0; --j) {
+                                // a contour is a hole if it is inside its parent and has different winding
+                                if (polys[j].inside(polys[i].points[0]) && polys[i].area * polys[j].area < 0) {
+                                    parent = polys[j];
+                                    break;
+                                }
+                            }
+                            if (parent) {
+                                parent.children.push(polys[i]);
+                            } else {
+                                root.push(polys[i]);
+                            }
+                        }
+
+                        const totalPoints = polys.reduce((sum, p) => sum + p.points.length, 0);
+                        const vertexData = new Float32Array(totalPoints * 2);
+                        let vertexCount = 0;
+                        const indices = [];
+
+                        function process(poly) {
+                            // construct input for earcut
+                            const coords = [];
+                            const holes = [];
+                            poly.points.forEach(({ x, y }) => coords.push(x, y));
+                            poly.children.forEach(child => {
+                                // children's children are new, separate shapes
+                                child.children.forEach(process);
+
+                                holes.push(coords.length / 2);
+                                child.points.forEach(({ x, y }) => coords.push(x, y));
+                            });
+
+                            // add vertex data
+                            vertexData.set(coords, vertexCount * 2);
+                            // add index data
+                            earcut(coords, holes).forEach(i => indices.push(i + vertexCount));
+                            vertexCount += coords.length / 2;
+                        }
+
+                        root.forEach(process);
+
+                        var meshdata = new BABYLON.VertexData();
+                        var vertices = [];
+                        var normals = [];
+
+                        for (let i = 0; i < vertexCount; i++) {
+                            vertices.push(vertexData[i * 2] * GLYPH_COORDS_SCALE);
+                            vertices.push(vertexData[i * 2 + 1] * GLYPH_COORDS_SCALE);
+                            vertices.push(0);
+
+                            normals.push(0);
+                            normals.push(0);
+                            normals.push(-1);
+                        }
+
+                        meshdata.positions = vertices;
+                        meshdata.indices = indices;
+                        meshdata.normals = normals;
+
+                        this.glyphs[ch].mesh = new BABYLON.Mesh("glyph #" + this.glyphs[ch].index + ": " + ch, scene);
+                        this.glyphs[ch].mesh.setParent(this.glyphsParent);
+
+                        if (this.material) {
+                            this.glyphs[ch].mesh.material = this.material;
+                        }
+
+                        meshdata.applyToMesh(this.glyphs[ch].mesh);
+
+                        this.glyphs[ch].mesh.setEnabled(false);
+                    }
+                }
+
+                return this.glyphs[ch];
+            }
+        }
+
+        class TextMesh {
+            constructor(textMeshFont, text, scene) {
+                this.textMeshFont = textMeshFont;
+                this.text = text;
+                this.width = 0;
+                this.instances = {};
+                this.rootNode = new BABYLON.Mesh("TextMesh: " + text.substring(0, 12), scene);
+
+                this.updateText(text);
+            }
+
+            updateText(text) {
+                const instanceCounts = {};
+                const pos = { x: 0, y: 0, z: 0 };
+
+                this.width = 0;
+
+                for (let i = 0; i < text.length; i++) {
+                    const ch1 = text[i];
+
+                    if (ch1 === "\n") {
+                        pos.x = 0;
+                        pos.y -= 1.1;
+                    }
+                    else {
+                        const ch2 = text[i + 1];
+                        let g = this.textMeshFont.glyphs[ch1];
+
+                        if (!g) {
+                            g = this.textMeshFont.createGlyph(ch1);
+                        }
+
+                        if (g) {
+                            if (g.mesh) {
+                                instanceCounts[ch1] = instanceCounts[ch1] ? instanceCounts[ch1] + 1 : 1;
+                                let inst;
+
+                                if (!this.instances[ch1]) {
+                                    inst = g.mesh.createInstance("glyph-inst: " + ch1);
+                                    this.instances[ch1] = [inst];
+                                }
+                                else if (instanceCounts[ch1] > this.instances[ch1].length) {
+                                    inst = g.mesh.createInstance("glyph-inst: " + ch1);
+                                    this.instances[ch1].push(inst);
+                                }
+                                else {
+                                    inst = this.instances[ch1][instanceCounts[ch1] - 1];
+                                    inst.setEnabled(true);
+                                }
+
+                                inst.setParent(this.rootNode);
+                                Object.assign(inst.position, pos);
+                            }
+
+                            let advance = g.advanceWidth;
+
+                            if (advance) {
+                                if (ch2 && this.textMeshFont.glyphs[ch2]) {
+                                    const kern = this.textMeshFont.font.getKerningValue(g.index, this.textMeshFont.glyphs[ch2].index);
+
+                                    if (kern) {
+                                        advance += kern;
+                                    }
+                                }
+
+                                pos.x += advance * GLYPH_COORDS_SCALE;
+
+                                if (pos.x > this.width) {
+                                    this.width = pos.x;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (let ch in this.instances) {
+                    const start = instanceCounts[ch] ? instanceCounts[ch] : 0;
+
+                    for (let i = start; i < this.instances[ch].length; i++) {
+                        this.instances[ch][i].setEnabled(false);
+                    }
+                }
+            }
+        }
+
+        class Text {
+            constructor(scene) {
+
+                this.points_player = 0;
+                this.message = "";
+
+                // Use your local font file here, e.g. "fonts/myfont.ttf"
+                const red = new BABYLON.StandardMaterial("red", scene);
+                red.diffuseColor = new BABYLON.Color3(0.5, 0.1, 0.2);
+
+                // let font1 = new TextMeshFont("https://fonts.cdnfonts.com/s/22366/Oxanium-Light.woff", null, function () {
+                let font1 = new TextMeshFont("https://fonts.cdnfonts.com/s/22366/Oxanium-ExtraBold.woff", red, () => {
+
+                    let t1 = new TextMesh(font1, "Points: ", scene);
+                    t1.rootNode.position.x = -max;
+                    t1.rootNode.position.y = -max - 10;
+                    let t2 = new TextMesh(font1, "0", scene);
+                    t2.rootNode.position.x = -max + 4;
+                    t2.rootNode.position.y = -max - 10;
+                    let t3 = new TextMesh(font1, "necips@live.de, 2021/10", scene);
+                    t3.rootNode.position.x = max - 12;
+                    t3.rootNode.position.y = -max - 10;
+
+                    scene.registerBeforeRender(() => {
+                        let points = desiredFps * this.points_player;
+                        t2.updateText(points.toString() + " " + this.message);
+                    })
+
+                    // scene.registerBeforeRender(function () {
+                    //     const time = Date.now();
+                    //     t1.updateText(time.toString());
+                    //     t1.rootNode.position.x = -4 + Math.sin((time % 100000) * 0.002);
+                    //     // t1.rootNode.rotation.x = Math.PI;
+                    //     // t1.rootNode.position.z = 10;
+
+                    //     t2.updateText(Date());
+                    //     t2.rootNode.position.x = -8 + 3.0 * Math.sin((time % 100000) * 0.001);
+                    // });
+
+                    // const red = new BABYLON.StandardMaterial("red", scene);
+                    // red.diffuseColor = new BABYLON.Color3(0.9, 0.1, 0.2);
+
+                    // let t3 = new TextMesh(font2, "A different font!\n®©™ª £¢¥øØßµ•°", scene);
+
+                    // let font2 = new TextMeshFont("https://fonts.cdnfonts.com/s/22366/Oxanium-ExtraBold.woff", red, function () {
+                    //     // let t3 = new TextMesh(font2, "A different font!\n®©™ª £¢¥øØßµ•°", scene);
+                    //     let t3 = new TextMesh(font2, "Made in Germany by necips@live.de, October 2021", scene);
+                    //     t3.rootNode.position.x = t3.width * -0.5;
+                    //     t3.rootNode.position.y = -max - 10;
+                    // })
+                });
+            }
+
+            // update(points_player) {
+            //     if (!this.t2) return;
+            // }
+        }
+
+
+        //
+        class Sky {
+            constructor(scene) {
+                let size = 200;
+
+                let light_r = new BABYLON.PointLight("light1", BABYLON.Vector3.Zero(), scene);
+                light_r.intensity = 0.;
+                light_r.diffuse = BABYLON.Color3.FromHexString('#22f233');
+
+                let light_g = new BABYLON.PointLight("light1", BABYLON.Vector3.Zero(), scene);
+                light_g.intensity = 0.;
+                light_g.diffuse = BABYLON.Color3.FromHexString('#23fff3');
+
+                let light_b = new BABYLON.PointLight("light1", BABYLON.Vector3.Zero(), scene);
+                light_b.intensity = 0.8;
+                light_b.diffuse = BABYLON.Color3.FromHexString('#f233ff');
+
+                let mat = new BABYLON.StandardMaterial("mat", scene);
+                mat.alpha = 0.8;
+
+                // let sphere = BABYLON.Mesh.CreateSphere("Sphere", 64, size, scene, true, BABYLON.Mesh.DOUBLESIDE);
+                this.sphere = BABYLON.MeshBuilder.CreateSphere("sphere", { diameter: size, segments: 128, updatable: true, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene)
+                this.sphere.material = mat;
+                // this.sphere.position.set(20, 20, 20);
+
+                let positions = this.sphere.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+                // let maxpos = positions.length / 3;
+
+                let f = 2;
+                for (let ip = 0; ip < positions.length; ip += 3) {
+                    positions[ip + 0] += f * (0.5 - Math.random());
+                    positions[ip + 1] += f * (0.5 - Math.random());
+                    positions[ip + 2] += f * (0.5 - Math.random());
+                }
+                this.sphere.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+
+                let t = 0;
+                scene.registerBeforeRender(function () {
+                    t += 0.001;
+                    light_r.position.x = 0.2 * size * Math.cos(1 + 4*t);
+                    light_r.position.y = 0.4 * size * Math.cos(2 + 2*t);
+                    light_r.position.z = 0.8 * size * Math.cos(3 + 3*t);
+
+                    light_g.position.x = 0.8 * size * Math.cos(4 + t);
+                    light_g.position.y = 0.4 * size * Math.cos(5 + t);
+                    light_g.position.z = 0.2 * size * Math.cos(6 + t);
+
+                    light_b.position.x = -0.4 * size * Math.cos(7 + t);
+                    light_b.position.y = -0.8 * size * Math.cos(8 + t);
+                    light_b.position.z = -0.2 * size * Math.cos(9 + t);
+                });
+            }
+        }
+
+        class WindAccelerator {
+            constructor(scene, material, x, y, z) {
+                // this.mesh = BABYLON.MeshBuilder.CreatePlane("", { width: 1, height: 1, depth: .01, updatable: true,sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+                // this.mesh = BABYLON.Mesh.CreateSphere("Sphere", 12, 1, scene, true, BABYLON.Mesh.DOUBLESIDE);
+                this.mesh = BABYLON.MeshBuilder.CreateSphere("sphere", { diameter: 1, segments: 12, updatable: true, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene)
+
+                // shadowGenerator.getShadowMap().renderList.push(this.mesh);
+                this.mesh.material = material;
+                this.mesh.position.set(x, y, z); // 50);
+                // let f = 15;
+                // this.mesh.position.set(0.5 * f - 0 * Math.random(), 0.5 * f - f * Math.random(), 0.5 * f - f * Math.random())
+                // this.pos = new BABYLON.Vector3(0.5*f - f*Math.random(), 0.5*f - f*Math.random(), 0.5*f - f*Math.random());
+                this.pos = new BABYLON.Vector3(0, 0, 0);
+                this.pos.copyFrom(this.mesh.position)
+                this.delta = new BABYLON.Vector3(0, 0, 0);
+                this.acc = new BABYLON.Vector3(0, 0, 0);
+
+                /**/
+                let positions = this.mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+                // let f = .3;
+                // for (let ip = 0; ip < positions.length; ip += 3) {
+                //     positions[ip + 0] += f * (0.5 - Math.random());
+                //     positions[ip + 1] += f * (0.5 - Math.random());
+                //     positions[ip + 2] += f * (0.5 - Math.random());
+                // }
+                for (let ip = 0; ip < positions.length; ip += 27) {
+                    let y = positions[ip + 1];
+                    let f = Math.log(-Math.abs(y));
+                    positions[ip + 130] += 0.02 * f;
+                }
+                this.mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+                /**/
+
+
+                this.time = 0
+                scene.registerAfterRender(() => {
+                    this.delta.x = 0.01 * (this.mesh.position.x - this.pos.x);
+                    if (Math.abs(this.delta.x) > 0) {
+                        this.mesh.position.x += this.acc.x;
+                        this.acc.x -= this.delta.x;
+                        this.acc.x *= 0.98;
+                    }
+
+                    this.delta.y = 0.01 * (this.mesh.position.y - this.pos.y);
+                    if (Math.abs(this.delta.y) > 0) {
+                        this.mesh.position.y += this.acc.y;
+                        this.acc.y -= this.delta.y;
+                        this.acc.y *= 0.98;
+                    }
+
+                    this.delta.z = 0.01 * (this.mesh.position.z - this.pos.z);
+                    if (Math.abs(this.delta.z) > 0) {
+                        this.mesh.position.z += this.acc.z;
+                        this.acc.z -= this.delta.z;
+                        this.acc.z *= 0.98;
+                    }
+
+
+                    this.mesh.rotation.copyFrom(this.mesh.position);
+
+                    this.pos.x += .4 * (0.5 * Math.random() - Math.random()) * Math.sin(this.time)
+                    this.pos.y += .4 * (0.5 * Math.random() - Math.random()) * Math.cos(this.time)
+                    this.pos.z += .4 * (0.5 * Math.random() - Math.random()) * Math.sin(this.time)
+                    this.time += 0.01;
+                });
+            }
+        }
+
+        function deformMesh(mesh) {
+            let positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+            let f = 10;
+            for (let ip = 0; ip < positions.length; ip += 3) {
+                positions[ip + 0] += f * (0.5 - Math.random());
+                positions[ip + 1] += f * (0.5 - Math.random());
+                positions[ip + 2] += f * (0.5 - Math.random());
+            }
+            mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+        }
+
+        let createScene = function () {
+
+            // let mesh_size2 = 0.75*mesh_size;
+            let max_players = 3;
+            let max_oponents = 50; // 25;
+            let max_boss_oponents = 0; // 5;
+            let max_bullets_player = 25;
+            let max_bullets_oponent = 25;
+            let max_stones = 0; // 20;
+            let max_windAcceleratorst = 20;
+            let fOponentAgression = 0.9998;
+            let time = 0;
+            let count_stones_play = 0;
+            let count_stones_opponent = 0;
+            let count_windAcceleratorst = 0;
+            let points_player = 0;
+
+            let scene = new BABYLON.Scene(engine);
+            // let bgcolor = BABYLON.Color3.FromHexString('#ffffff'); // #333333');
+            // scene.clearColor = bgcolor;
+            // scene.ambientColor = bgcolor;
+            // scene.fogMode = BABYLON.Scene.FOGMODE_LINEAR;
+            // scene.fogColor = bgcolor;
+            // scene.fogDensity = 0.01;
+            // scene.fogStart = 50.0;
+            // scene.fogEnd = 300.0;
+
+
+            // let camera = new BABYLON.FreeCamera("Camera", new BABYLON.Vector3(0, 0, 100), scene);
+            // camera.setTarget(BABYLON.Vector3.Zero());
+            // // camera.attachControl(canvas, true);
+
+            var camera = new BABYLON.ArcRotateCamera("camera1", 0, 0, 0, new BABYLON.Vector3(0, 0, 100), scene);
+            // camera.setPosition(new BABYLON.Vector3(-10, 0, -20));
+            // camera.alpha = Math.PI;
+            camera.setPosition(new BABYLON.Vector3(0, 0, -100));
+            // camera.attachControl(canvas, true);
+
+
+
+            // let camera = new BABYLON.ArcRotateCamera("", 3 * Math.PI / 2, Math.PI / 2.5, 80, BABYLON.Vector3.Zero(), scene);
+            // camera.attachControl(canvas, true);
+
+
+            // let light1 = new BABYLON.SpotLight("spotLight", new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, 1, 0), Math.PI / 3, 2, scene);
+            // light1.intensity = .5;
+            // light1.diffuse = BABYLON.Color3.FromHexString('#ff9944');   // ff9944
+
+            // let light2 = new BABYLON.SpotLight("spotLight", new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -1, 0), Math.PI / 3, 2, scene);
+            // light2.intensity = .5;
+            // light2.diffuse = BABYLON.Color3.FromHexString('#992244');
+
+            // let light3 = new BABYLON.SpotLight("spotLight", new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -1, 0), Math.PI / 3, 2, scene);
+            // light3.intensity = .1;
+            // light3.diffuse = BABYLON.Color3.FromHexString('#99ff44');
+
+            let skyLight = new BABYLON.HemisphericLight("sky", new BABYLON.Vector3(0, 1.0, 0), scene);
+            // sky.intensity = .8;
+            // sky.diffuse = bgcolor;
+
+            let text = new Text(scene);
+
+            let sky = new Sky(scene);
+
+            // new WaterEffect(scene, camera);
+
+            // let flower = new Flower(scene);
+
+            // let lightSphere = BABYLON.Mesh.CreateSphere("sphere1", 16, 0.1, scene);
+            // let lightSphereMat = new BABYLON.StandardMaterial("mat", scene);
+            // lightSphere.material = lightSphereMat;
+            // lightSphereMat.emissiveColor = BABYLON.Color3.Yellow();
+            // lightSphereMat.linkEmissiveWithDiffuse = true;
+            // lightSphere.position.y = .0;
+
+            // light.parent = lightSphere
+
+            // let shadowGenerator = new BABYLON.ShadowGenerator(1024, light3);
+            // shadowGenerator.setDarkness(0.2);
+            // shadowGenerator.usePoissonSampling = true;
+            // shadowGenerator.useBlurVarianceShadowMap = true;
+            // shadowGenerator.blurBoxOffset = 1.0;
+            // shadowGenerator.blurScale = 150.0;
+            // shadowGenerator.bias = 0.00001;
+
+            // new Waves(scene);
+
+
+
+
+            let materialPlayer = new BABYLON.StandardMaterial("", scene);
+            materialPlayer.diffuseColor = new BABYLON.Color3(0, 1, 1);
+
+
+            // let materialPlayerShield = new BABYLON.StandardMaterial("", scene);
+            // materialPlayerShield.diffuseColor = new BABYLON.Color3(1, 1, 1);
+            // // materialPlayerShield.wireframe = true;
+            // materialPlayerShield.pointsCloud = true
+
+            let materialPlayerFireEngine = new BABYLON.StandardMaterial("", scene);
+            materialPlayerFireEngine.diffuseColor = new BABYLON.Color3(1, 0, 0);
+
+            let materialOponent = new BABYLON.StandardMaterial("", scene);
+            materialOponent.diffuseColor = new BABYLON.Color3(1, 0, 0);
+
+            let materialBossOponent = new BABYLON.StandardMaterial("", scene);
+            materialBossOponent.diffuseColor = new BABYLON.Color3(1, 1, 1);
+
+            let materialStone = new BABYLON.StandardMaterial("", scene);
+            materialStone.diffuseColor = new BABYLON.Color3(1, 1, 0);
+            // materialStone.alpha = 0.9;
+
+            let materialBullet_Player = new BABYLON.StandardMaterial("", scene);
+            materialBullet_Player.diffuseColor = new BABYLON.Color3(1, 0, 1);
+
+            let materialBullet_Oponent = new BABYLON.StandardMaterial("", scene);
+            materialBullet_Oponent.diffuseColor = new BABYLON.Color3(1, 0.5, 0);
+
+            let materialGround = new BABYLON.StandardMaterial("", scene);
+            materialGround.diffuseColor = new BABYLON.Color3(1, 1, 1);
+
+            let materialPlayground = new BABYLON.StandardMaterial("", scene);
+            materialPlayground.diffuseColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+            materialPlayground.alpha = .5;
+            //materialPlayground.pointsCloud = true
+
+            let materialFlyer = new BABYLON.StandardMaterial("", scene);
+            materialFlyer.diffuseColor = new BABYLON.Color3(.5, .5, .5);
+
+
+            /** /
+            let levels = [];
+            for (let i = 0; i < 15; i++) {
+                const shape = BABYLON.Mesh.CreatePolyhedron("", { type: i, size: 1 }, scene);
+                shape.position = new BABYLON.Vector3(- 8.5 * 3 + i * 3, max + 14, 0);
+                levels.push(shape);
+            }
+            /**/
+
+            let levels = [];
+            for (let i = 0; i < 6; i++) {
+                const shape = BABYLON.Mesh.CreatePolyhedron("", { type: i, size: 1 }, scene);
+                shape.position = new BABYLON.Vector3(- 8.5 * 3 + i * 4, max + 14, 0);
+                shape.isVisible = false;
+                levels[i + 1] = shape;
+            }
+            // levels[desiredFps - 1].scaling.set(2, 2, 2);
+
+            let setLevel = (level) => {
+                desiredFps = level;
+                interval = 1000 / (10 * desiredFps);
+
+                levels.forEach((level) => { level.scaling.set(1, 1, 1) })
+                levels[desiredFps].scaling.set(2, 2, 2);
+            }
+
+            setLevel(desiredFps)
+
+            // let createMesh = (size) => {
+            //     let mesh = BABYLON.MeshBuilder.CreateBox("", { size: mesh_size }, scene);
+            //     // shadowGenerator.getShadowMap().renderList.push(mesh);
+            //     return mesh;
+            // }
+
+            // let createMeshStone = (size) => {
+            //     let mesh = BABYLON.MeshBuilder.CreateSphere("", { diameter: mesh_size }, scene);
+            //     return mesh;
+            // }
+
+
+            /*
+                        for (let i1 = 0; i1 < 5; i1++) {
+                            for (let i2 = 0; i2 < 5; i2++) {
+                                new WindAccelerator(scene, materialFlyer, 10 * Math.random(), 10 * Math.random(), 100 * Math.random());
+                                // new WindAccelerator(scene, materialFlyer, 0,0,0);
+                            }
+                        }
+            */
+
+            // let mesh_mothership = BABYLON.MeshBuilder.CreateBox("", { width: 50, height: 50, depth: 50, updatable: true }, scene);
+            let mesh_mothership = BABYLON.MeshBuilder.CreateTiledBox("", { updatable: true, width: 50, height: 50, depth: 50, tileSize: 2, tileWidth: 2 });
+            // mesh_mothership.position.set(0, 2 * max, -max * 5);
+            mesh_mothership.position.set(0, 2 * max, max * 5);
+            mesh_mothership.rotation.set(Math.PI * 0.5, Math.PI * 0.25, Math.PI * 0.25)
+            scene.registerAfterRender(() => {
+                mesh_mothership.position.x += 0.01 * Math.sin(time);
+                mesh_mothership.position.y += 0.01 * Math.sin(time);
+                mesh_mothership.position.z += 0.1 * Math.sin(time);
+
+                mesh_mothership.rotation.x += 0.001;
+                mesh_mothership.rotation.y += 0.001;
+                mesh_mothership.rotation.z += 0.001;
+            })
+
+
+
+            let mesh_moon = BABYLON.MeshBuilder.CreateSphere("", { diameter: 50, updatable: true }, scene);
+            // mesh_moon.position.set(max*3 , 2*max, -max*10);            
+            mesh_moon.position.set(0, 0, max * 10);
+            scene.registerAfterRender(() => {
+                mesh_moon.position.x = 5 * max * Math.sin(time * 0.01);
+                mesh_moon.position.y = 1 * max * Math.cos(time * 0.01);
+                // mesh_moon.position.z = max*Math.sin(time);
+
+                // mesh_moon.rotation.x += 0.001;
+                // mesh_moon.rotation.y += 0.001;
+                // mesh_moon.rotation.z += 0.001;
+            })
+
+
+            // deformMesh(mesh_mothership);
+            // deformMesh(mesh_moon);
+
+            // for(let i=0;i<20;i++) {
+            //     let mesh_star = BABYLON.MeshBuilder.CreateSphere("", { diameter: 1}, scene);
+            //     // mesh_moon.position.set(max*3 , 2*max, -max*10);            
+            //     mesh_star.position.set(0.5*max - max*Math.random(), 0.5*max - max*Math.random(), -10*max -10*max*Math.random());
+            //     // scene.registerAfterRender(() => {
+            //     //     mesh_star.position.x = 1*max*Math.sin(time*0.01);
+            //     //     mesh_star.position.y = 1*max*Math.cos(time*0.01);
+            //     //     // mesh_moon.position.z = max*Math.sin(time);
+
+            //     //     // mesh_moon.rotation.x += 0.001;
+            //     //     // mesh_moon.rotation.y += 0.001;
+            //     //     // mesh_moon.rotation.z += 0.001;
+            //     // })
+            // }
+
+            let maxWall = max * 1.5;
+            let sizeWall = maxWall * 2;
+            // let mesh_ground = BABYLON.MeshBuilder.CreateBox("", { width: sizeWall, height: 2, depth: sizeWall }, scene);
+            // mesh_ground.position.set(0, -maxWall, 0);
+            // mesh_ground.material = materialGround;
+            // // ground.receiveShadows = true;
+
+            // let mesh_playground = BABYLON.MeshBuilder.CreateBox("", { width: sizeWall * 0.7, height: sizeWall * 0.8, depth: 1 }, scene);
+            // mesh_playground.position.set(0, 0, 1);
+            // mesh_playground.material = materialPlayground;
+
+
+
+
+            // let ground = BABYLON.MeshBuilder.CreateSphere("", { diameter: max*5.5 }, scene);
+            // ground.position.set(0, -max*4, 0);
+            // ground.material = materialGround;
+
+            // let wall1 = BABYLON.MeshBuilder.CreateBox("", { width: 2, height: sizeWall, depth: sizeWall }, scene);
+            // wall1.position.set(-maxWall, 0, 0);
+            // wall1.material = materialGround;
+            // wall1.receiveShadows = true;
+
+            // let wall2 = BABYLON.MeshBuilder.CreateBox("", { width: 2, height: sizeWall, depth: sizeWall }, scene);
+            // wall2.position.set(maxWall, 0, 0);
+            // wall2.material = materialGround;
+            // wall2.receiveShadows = true;
+
+            // let wall3 = BABYLON.MeshBuilder.CreateBox("", { width: sizeWall, height: sizeWall, depth: 2 }, scene);
+            // wall3.position.set(0, 0, -maxWall);
+            // wall3.material = materialGround;
+            // wall3.receiveShadows = true;
+
+            // let wall4 = BABYLON.MeshBuilder.CreateBox("", { width: sizeWall, height: 2, depth: sizeWall }, scene);
+            // wall4.position.set(0, maxWall, 0);
+            // wall4.material = materialGround;
+            // wall4.receiveShadows = true;
+
+
+
+            let inputMap = {};
+            scene.actionManager = new BABYLON.ActionManager(scene);
+            scene.actionManager.registerAction(new BABYLON.ExecuteCodeAction(BABYLON.ActionManager.OnKeyDownTrigger, function (evt) {
+                inputMap[evt.sourceEvent.key] = evt.sourceEvent.type == "keydown";
+            }));
+            scene.actionManager.registerAction(new BABYLON.ExecuteCodeAction(BABYLON.ActionManager.OnKeyUpTrigger, function (evt) {
+                inputMap[evt.sourceEvent.key] = evt.sourceEvent.type == "keydown";
+            }));
+
+
+            // BABYLON.Engine.audioEngine.useCustomUnlockedButton = true;
+
+            // https://doc.babylonjs.com/typedoc/classes/babylon.sound
+            let sounds = {
+                // background: new BABYLON.Sound("Music", "sounds/epic_battle_music_1mp3-6275.mp3", scene, null, {loop: false, autoplay: false}),
+                player_killed: new BABYLON.Sound("Music", "sounds/524281__tkky__bb-srm-future-hiphop-stab.wav", scene, null, { loop: false, autoplay: false }),
+                player_new: new BABYLON.Sound("Music", "sounds/erweckungszauber-7544.mp3", scene, null, { loop: false, autoplay: false }),
+                player_bullet_to_opponent: new BABYLON.Sound("Music", "sounds/250127__tim-kahn__portal03.wav", scene, null, { loop: false, autoplay: false }),
+                oponent_bullet_to_player: new BABYLON.Sound("Music", "sounds/221000__jalastram__fx024.mp3", scene, null, { loop: false, autoplay: false }),
+                you_won: new BABYLON.Sound("Music", "sounds/chonology-of-love-6094.mp3", scene, null, { loop: false, autoplay: false }),
+                you_lost: new BABYLON.Sound("Music", "sounds/cinematic-impact-climax-intro-sfx-6072.mp3", scene, null, { loop: false, autoplay: false }),
+                beep: new BABYLON.Sound("Music", "sounds/beep-sound-8333.mp3", scene, null, { loop: false, autoplay: false }),
+            }
+
+            // let sound_background = new BABYLON.Sound("Music", "sounds/epic_battle_music_1mp3-6275.mp3", scene, null, { loop: false, autoplay: false })
+
+            // // sound_background.play();
+            // sounds.beep.play();
+            // BABYLON.Engine.audioEngine.unlock();
+
+
+            for (let i = 0; i < max_players; i++) {
+                // m = BABYLON.MeshBuilder.CreateBox("", { size: mesh_size }, scene);
+                // m = BABYLON.Mesh.CreatePolyhedron("", {type: TYPE_PLAYER, size: mesh_size}, scene);
+                // m = BABYLON.MeshBuilder.CreateBox("", { size: mesh_size * 2 }, scene);
+                m = BABYLON.MeshBuilder.CreateCylinder("", { height: mesh_size * 2, diameterBottom: mesh_size * 2, diameterTop: 0.7 * mesh_size }, scene);
+                meshes.push(m)
+                m.material = materialPlayer;
+                m.position.set(i * 2, 0, 0);
+                m.custom = {
+                    type: PLAYER,
+                    active: false,
+                    dead: false,
+                    index: i,
+                    counter: 0,
+                    value: 100,
+                    delta: { x: 0.0, y: 0.0, z: 0 },
+                    rotate: { x: 0., y: 0.1, z: 0 }
+                }
+            }
+
+            // m.custom.active = true;
+            // m.position.set(0, -max, 0);
+            // m.position.set(-max, 0, 0);
+            let mesh_player = m
+            // light1.parent = mesh_player;
+            // light2.parent = mesh_player;
+
+            let mesh_player_fireEngine = BABYLON.Mesh.CreatePolyhedron("", { type: PLAYER, size: mesh_size * 0.7 }, scene);
+            mesh_player_fireEngine.rotation.y = Math.PI;
+            mesh_player_fireEngine.position.y = -1 * mesh_size;
+            mesh_player_fireEngine.parent = mesh_player;
+            mesh_player_fireEngine.material = materialPlayerFireEngine;
+
+
+
+            // m = BABYLON.MeshBuilder.CreateSphere("", { diameter: mesh_size * 5 }, scene);
+            // meshes.push(m)
+            // m.material = materialPlayerShield;
+            // m.position.set(0, 0, 0);
+            // m.custom = {
+            //     type: PLAYER_SHIELD,
+            //     active: true,
+            //     index: 0,
+            //     counter: 10,
+            //     value: 10,
+            //     delta: { x: 0.0, y: 0.0, z: 0 },
+            //     rotate: { x: 0., y: 0.1, z: 0 }
+            // }
+            // let mesh_player_shield = m;
+            // mesh_player_shield.parent = mesh_player;
+
+            // for (let i = 0; i < 3; i++) {
+            // m = BABYLON.MeshBuilder.CreateBox("", { size: mesh_size }, scene);
+            for (let i = 0; i < max_boss_oponents; i++) {
+                m = BABYLON.Mesh.CreatePolyhedron("", { type: TYPE_BOSS_OPONENT, size: mesh_size }, scene);
+                meshes.push(m)
+                m.material = materialBossOponent;
+                m.position.set(max * (0.5 - Math.random()), max * (0.5 - Math.random()), 0);
+                m.custom = {
+                    type: BOSS_OPONENT,
+                    active: true,
+                    index: 0,
+                    counter: 0,
+                    value: 50,
+                    delta: { x: 0.5 * (0.5 - Math.random()), y: 0.5 * (0.5 - Math.random()), z: 0 },
+                    rotate: { x: 0.1, y: 0.1, z: 0.1 }
+                }
+
+                // if (i == 1) {
+                m.scaling.set(2, 2, 2)
+                // m.custom.rotate = { x: 0.01, y: 0.01, z: 0.01 }
+                // light3.parent = m;
+                // let mesh_bossoponent = m;
+                // }
+                // }
+            }
+
+
+            for (let i = 0; i < max_bullets_player; i++) {
+                // m = createMesh();
+                m = BABYLON.Mesh.CreatePolyhedron("", { type: TYPE_BULLET_PLAYER, size: mesh_size }, scene);
+                m.scaling.set(0.8,0.8,0.8);
+                meshes.push(m)
+                m.material = materialBullet_Player;
+                m.position.set(0, 0, 0);
+                m.position.set(10*max + 4, i * 2, 0);
+                m.custom = {
+                    type: BULLET_PLAYER,
+                    active: false,
+                    counter: 1,
+                    index: i,
+                    value: 10,
+                    delta: { x: 0.1, y: 0, z: 0 },
+                    rotate: { x: 0.1 * (0.5 - Math.random()), y: 0.1 * (0.5 - Math.random()), z: 0.1 },
+                    // sound: new BABYLON.Sound("Music", "sounds/G4.mp3", scene, null, {loop: false, autoplay: false})
+                    // sound: new BABYLON.Sound("Music", "sounds/95802__robinhood76__01670-electric-future-blast.wav", scene, null, {loop: false, autoplay: false})
+                    sound: new BABYLON.Sound("Music", "sounds/power-down-7103.mp3", scene, null, { loop: false, autoplay: false })
+                }
+            }
+
+            for (let i = 0; i < max_bullets_oponent; i++) {
+                // m = createMesh();
+                m = BABYLON.Mesh.CreatePolyhedron("", { type: TYPE_BULLET_OPONENT, size: mesh_size }, scene);
+                m.scaling.set(0.8,0.8,0.8);
+                meshes.push(m)
+                m.material = materialBullet_Oponent;
+                m.position.set(-max*10 - 4, i * 2, 0);
+                m.custom = {
+                    type: BULLET_OPONENT,
+                    active: false,
+                    counter: 1,
+                    index: i,
+                    value: 10,
+                    delta: { x: 0.1, y: 0, z: 0 },
+                    rotate: { x: 0.1 * (0.5 - Math.random()), y: 0.1 * (0.5 - Math.random()), z: 0.1 },
+                    sound: new BABYLON.Sound("Music", "sounds/260089__soneproject__sfx18.wav", scene, null, { loop: false, autoplay: false })
+                    // sound: new BABYLON.Sound("Music", "sounds/C5.mp3", scene, null, {loop: false, autoplay: false})
+                }
+            }
+
+            for (let i = 0; i < max_stones; i++) {
+                m = BABYLON.MeshBuilder.CreateSphere("", { diameter: mesh_size * 2 }, scene);
+                meshes.push(m)
+                m.material = materialStone;
+                m.position.set(max * (0.5 - Math.random()), max * (0.5 - Math.random()), 0);
+                m.custom = {
+                    type: STONE,
+                    active: true,
+                    counter: 10,
+                    value: 50,
+                    delta: { x: 0.8 * (0.5 - Math.random()), y: 0.8 * (0.5 - Math.random()), z: 0 },
+                    rotate: { x: 0.1 * (0.5 - Math.random()), y: 0.1 * (0.5 - Math.random()), z: 0.1 }
+                }
+            }
+
+            // for (let x = -max * 0.5; x < 0.5 * max; x++) {
+            //     for (let y = 0; y < 5; y++) {
+            //         // m = createMeshStone();
+            //         // m = BABYLON.Mesh.CreatePolyhedron("", {type: TYPE_STONE, size: mesh_size}, scene);
+            //         m = BABYLON.MeshBuilder.CreateSphere("", { diameter: mesh_size * 2 }, scene);
+            //         meshes.push(m)
+            //         m.material = materialStone;
+            //         m.position.set(x * 2, -max * 0.5 + y * 2, 0);
+            //         m.custom = {
+            //             type: STONE,
+            //             active: true,
+            //             counter: 10,
+            //             delta: { x: 0, y: 0, z: 0 },
+            //             rotate: { x: 0.1 * (0.5 - Math.random()), y: 0.1 * (0.5 - Math.random()), z: 0.1 }
+            //         }
+            //     }
+            // }
+
+
+            for (let i = 0; i < max_oponents; i++) {
+                // m = createMesh();
+                m = BABYLON.Mesh.CreatePolyhedron("", { type: TYPE_OPONENT, size: mesh_size }, scene);
+                meshes.push(m)
+                m.material = materialOponent;
+                m.position.set(-max + 2 * max * Math.random(), max + 2 * max * Math.random(), 0);
+                m.custom = {
+                    type: OPONENT,
+                    active: true,
+                    counter: 1,
+                    index: i,
+                    value: 100,
+                    // delta: { x: (0.5 - Math.random()), y: (0.5 - Math.random()), z: 0 },
+                    delta: { x: 0, y: -0.5 - 0.5 * Math.random(), z: 0 },
+                    rotate: { x: 0.1 * (0.5 - Math.random()), y: 0.1 * (0.5 - Math.random()), z: 0.1 }
+                }
+            }
+
+
+            meshes.forEach((mesh) => {
+                mesh.custom.position = { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z }
+            })
+
+
+            function createRay(fromPoint, direction, distance, color) {
+                let babylonColor = new BABYLON.Color4(1, 1, 1, 0.2);
+                switch (color) {
+                    case "red":
+                        babylonColor = new BABYLON.Color4(1, 0, 0, 1)
+                }
+
+                BABYLON.MeshBuilder.CreateLines("",
+                    {
+                        points: [fromPoint, fromPoint.add(direction.scale(distance))],
+                        colors: [babylonColor, babylonColor]
+                    });
+            }
+            // createRay(cameraMesh.position.add(new BABYLON.Vector3(0,0,1/2)), dir, 10, "");
+
+
+            let randomChanges = (mesh) => {
+
+                if (count_windAcceleratorst >= max_windAcceleratorst) return;
+                count_windAcceleratorst++;
+
+                new WindAccelerator(scene, materialFlyer, 10 * Math.random(), 10 * Math.random(), -100 + 50 * Math.random());
+                // new WindAccelerator(scene, materialFlyer, mesh.position.x, mesh.position.y, 2*max);
+
+
+                /*
+                if (Math.random() > 0.5) {
+                    camera.position.x += 0.1*(0.5 - Math.random());
+                    camera.rotation.x += 0.1*(0.5 - Math.random());
+                }
+                else if (Math.random() > 0.5) {
+                    camera.position.y += 0.1*(0.5 - Math.random());
+                    camera.rotation.z += 0.1*(0.5 - Math.random());
+                }
+                else if (Math.random() > 0.5) {
+                    camera.position.z += 0.1*(0.5 - Math.random());
+                    camera.rotation.z += 0.1*(0.5 - Math.random());
+                }
+                */
+
+                // if (Math.random() > 0.8) {
+                //     sky.sphere.rotation.y += 0.25;
+                // }
+                // if (Math.random() > 0.3) {
+                //     for (let i = 0; i < 1; i++) {
+                //         new WindAccelerator(scene, materialFlyer, 10 * Math.random(), 10 * Math.random(), 100 * Math.random());
+                //     }
+                // }
+
+                // if (Math.random() > 0.5) {
+                //     // let camMax = 2;
+                //     // camera.cameraRotation.x += 0.1 * (0.5 - Math.random());
+                //     // camera.cameraRotation.y += 0.1 * (0.5 - Math.random());
+
+                //     // if (camera.cameraRotation.x > camMax)
+                //     //     camera.cameraRotation.x = camMax;
+                //     // if (camera.cameraRotation.x < -camMax)
+                //     //     camera.cameraRotation.x = -camMax;
+
+                //     // if (camera.cameraRotation.y > camMax)
+                //     //     camera.cameraRotation.y = camMax;
+                //     // if (camera.cameraRotation.y < -camMax)
+                //     //     camera.cameraRotation.y = -camMax;
+
+
+                //     // camera.cameraDirection.x += 0.1 * (0.5 - Math.random());
+                //     // camera.cameraDirection.y += 0.1 * (0.5 - Math.random());
+
+                //     // if (camera.cameraDirection.x > camMax)
+                //     //     camera.cameraDirection.x = camMax;
+                //     // if (camera.cameraDirection.x < -camMax)
+                //     //     camera.cameraDirection.x = -camMax;
+
+                //     // if (camera.cameraDirection.y > camMax)
+                //     //     camera.cameraDirection.y = camMax;
+                //     // if (camera.cameraDirection.y < -camMax)
+                //     //     camera.cameraDirection.y = -camMax;
+
+
+                //     // camera.position.x += 1 * (0.5 - Math.random());
+                //     // camera.position.y += 1 * (0.5 - Math.random());
+                //     // camera.position.z += 10 * (0.5 - Math.random());
+
+                //     // if (camera.position.x > camMax)
+                //     //     camera.position.x = camMax;
+                //     // if (camera.position.x < -camMax)
+                //     //     camera.position.x = -camMax;
+
+                //     // if (camera.position.y > camMax)
+                //     //     camera.position.y = camMax;
+                //     // if (camera.position.y < -camMax)
+                //     //     camera.position.y = -camMax;
+
+                //     // if (camera.position.z > camMax)
+                //     //     camera.position.z = camMax;
+                //     // if (camera.position.z < -camMax)
+                //     //     camera.position.z = -camMax;
+                // }
+
+                // if (Math.random() > 0.5) {
+                //     camera.position.z += 5*(0.5 - Math.random());
+                // }
+            }
+
+
+            let behaves = []
+
+            // Player mouse move
+            behaves.push((m) => {
+
+                // camera.position.addInPlace(camera.getDirection(BABYLON.Vector3.Right()));
+                // let cp = new BABYLON.Vector3(point_mouse.x*0.01, point_mouse.y*0.01, 0);
+                // camera.position.addInPlace(camera.getDirection(cp));
+
+                if (gameover) {
+                    meshes.forEach((mesh) => {
+                        if (mesh.custom.type === PLAYER) {
+                            // mesh.custom.active = true;
+                            mesh.position.z += 0.005;
+                        }
+                    })
+
+                    return;
+                }
+                if (!m.custom.active) return;
+
+                if (m.custom.type == PLAYER) {
+                    m.position.x = -point_mouse.x * 0.1;
+                    m.position.y = -point_mouse.y * 0.1;
+
+                    // camera.position.x = -point_mouse.x * 0.5;
+                    // camera.position.y = -point_mouse.y * 0.5;
+                    // camera.position.x = point_mouse.x * .1;
+
+                    if (m.position.x > max || m.position.x < -max) {
+                        m.position.x = m.position.x > max ? max : -max;
+                    }
+                    if (m.position.y < -max) {
+                        m.position.y = -max;
+                    }
+
+                    if (m.position.y > -0.5*max) {
+                        m.position.y = -0.5*max;
+                    }
+
+                    // mesh_player_shield.position.x = m.position.x;
+                    // mesh_player_shield.position.y = m.position.y;
+
+                    // if (mesh_player_shield.position.x > max || mesh_player_shield.position.x < -max) {
+                    //     mesh_player_shield.position.x = mesh_player_shield.position.x > max ? max : -max;
+                    // }
+                    // if (mesh_player_shield.position.y > max || mesh_player_shield.position.y < -max) {
+                    //     mesh_player_shield.position.y = mesh_player_shield.position.y > max ? max : -max;
+                    // }
+                }
+            });
+
+            // Border Kollision for inactive objects
+            behaves.push((m) => {
+                if (m.custom.active) return;
+
+                if (m.custom.type === BULLET_PLAYER)
+                    m.position.set(10 * -max - 4, max - m.custom.index * 2, 0);
+
+                else if (m.custom.type === BULLET_OPONENT)
+                    m.position.set(10 * max + 4, max - m.custom.index * 2, 0);
+
+                // else if (m.custom.type === OPONENT)
+                //     m.position.set(max - m.custom.index * 2, max + 4, 0);
+
+                // else if (m.custom.type === STONE)
+                //     m.position.y = -max - 4;
+
+                else if (m.custom.type === PLAYER) {
+                    if (!m.custom.dead) {
+                        m.position.set(max - m.custom.index * 2, -max - 6, 0);
+                    }
+                }
+
+                else if (m.custom.type === OPONENT) {
+                    //  m.position.y -= .5;
+                    m.position.z -= 2;
+
+                    // if (m.position.y < -max - 8) {
+                    //     m.position.y = -max - 8;
+                    // }
+                    // else {
+                    //     m.position.z -= 0.1;
+                    //     if (m.position.z > max - 10)
+                    //         m.position.z = max - 10;
+                    // }
+                }
+
+                else if (m.custom.type === STONE) {
+
+                    if (m.custom.hitFrom == BULLET_PLAYER) {
+                        m.position.y -= .1;
+
+                        if (m.position.y < -max - 10) {
+                            m.position.y = -max - 10;
+                        }
+                        else {
+                            m.scaling.x += 0.001;
+                            m.scaling.y += 0.001;
+                            m.scaling.z += 0.001;
+                        }
+                    }
+                    else if (m.custom.hitFrom == BULLET_OPONENT) {
+                        m.position.y += .1;
+
+                        if (m.position.y > max + 10) {
+                            m.position.y = max + 10;
+                        }
+                        else {
+                            m.scaling.x += 0.001;
+                            m.scaling.y += 0.001;
+                            m.scaling.z += 0.001;
+                        }
+                    }
+
+
+                    // else {
+                    //     m.position.z -= 0.1;
+                    //     if (m.position.z > max - 10)
+                    //         m.position.z = max - 10;
+                    // }
+                }
+            })
+
+            // Fired
+            behaves.push((m) => {
+                if (gameover) return;
+                if (!m.custom.active) return;
+
+                meshes.forEach((mesh) => {
+                    if (mesh.custom.type === BULLET_PLAYER && !mesh.custom.active) {
+                        if (player_fired) {
+                            player_fired = false;
+                            mesh.position.x = mesh_player.position.x;
+                            mesh.position.y = mesh_player.position.y;
+                            mesh.position.z = mesh_player.position.z;
+
+                            mesh.custom.delta.x = 0; //  Math.sign(mp.custom.delta.x);
+                            mesh.custom.delta.y = 1; // Math.sign(mp.custom.delta.y);
+                            mesh.custom.delta.z = 0; // Math.sign(mp.custom.delta.z);
+                            mesh.custom.active = true;
+
+                            // BABYLON.Engine.audioEngine.useCustomUnlockedButton = true;
+                            mesh.custom.sound.play();
+                            // BABYLON.Engine.audioEngine.unlock();
+                            return true;
+                        }
+                    }
+
+
+                    if (mesh.custom.type === BULLET_OPONENT && !mesh.custom.active) {
+
+                        if (m.custom.type === OPONENT && Math.random() > fOponentAgression) {
+                            mesh.position.x = m.position.x;
+                            mesh.position.y = m.position.y;
+                            mesh.position.z = m.position.z;
+                            // mesh.custom.delta.x = 0.4 * (0.5 - Math.random());
+                            // mesh.custom.delta.y = -1; // 0.8*(0.5-Math.random());
+
+                            // mesh.custom.delta.x = 0.025 * (mesh_player.position.x - mesh.position.x);
+                            // mesh.custom.delta.y = 0.025 * (mesh_player.position.y - mesh.position.y);
+
+                            mesh.custom.delta.x = 0; // 0.025 * (mesh_player.position.x - mesh.position.x);
+                            mesh.custom.delta.y = -1.25; // 0.025 * (mesh_player.position.y - mesh.position.y);
+
+                            mesh.custom.delta.z = 0;
+                            mesh.custom.active = true;
+
+                            // BABYLON.Engine.audioEngine.useCustomUnlockedButton = true;
+                            mesh.custom.sound.play();
+                            // BABYLON.Engine.audioEngine.unlock();
+                            return true;
+                        }
+                    }
+
+                })
+            })
+
+            // Kollision
+            behaves.push((m) => {
+                if (gameover) {
+                    m.custom.delta.x *= 0.99;
+                    m.custom.delta.y *= 0.99;
+                    m.custom.delta.z *= 0.99;
+
+                    m.rotation.x *= 0.99;
+                    m.rotation.y *= 0.99;
+                    m.rotation.z *= 0.99;
+                    return;
+                }
+
+                if (!m.custom.active) return;
+                // if (m.custom.type === WALL) return;
+
+                meshes.forEach((mesh) => {
+                    if (!mesh.custom.active) return true;
+                    if (mesh === m) return true;
+
+                    let dx = mesh.position.x - m.position.x;
+                    let dy = mesh.position.y - m.position.y;
+                    let dz = mesh.position.z - m.position.z;
+                    let dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                    if (dist < mesh_size) {
+                        if (m.custom.type === OPONENT && mesh.custom.type === PLAYER) {
+                            points_player -= mesh.custom.value;
+
+                            sounds.player_killed.play();
+
+                            m.custom.active = false;
+                            mesh.custom.active = false;
+                            mesh.custom.dead = true;
+                            // mesh.custom.rotate = {x:Math.random(),y:Math.random(),z:Math.random()}
+                            // mesh.custom.delta.z = -0.2;
+                            // mesh.scaling.set(.75, .75, .75);
+                            gameover = true;
+                            players_death++;
+                            if (players_death >= 3) {
+                                deformMesh(mesh_moon);
+                                text.message = " [GAME OVER - YOU LOST]"
+
+                                sounds.you_lost.play();
+                            }
+                            return true;
+                        }
+                        if (m.custom.type === BULLET_OPONENT && mesh.custom.type === PLAYER) {
+                            points_player -= mesh.custom.value;
+
+                            sounds.player_killed.play();
+
+                            m.custom.active = false;
+                            mesh.custom.active = false;
+                            mesh.custom.dead = true;
+                            // mesh.scaling.set(1, 0.5, 1);
+                            gameover = true;
+                            players_death++;
+                            if (players_death >= 3) {
+                                deformMesh(mesh_moon);
+                                text.message = " [GAME OVER - YOU LOST]"
+                                sounds.you_lost.play();
+                            }
+                            return true;
+                        }
+
+                        // if (!m.custom.type === BULLET_OPONENT && mesh.custom.type === PLAYER_SHIELD) {
+                        //     mesh.custom.counter --;
+
+                        //     let sf = 2 - 0.1*mesh.custom.counter;
+                        //     mesh.scaling.set(sf,sf,sf)
+                        //     if (mesh.custom.counter <=0) {
+                        //         m.custom.active = false;
+                        //         mesh.custom.active = false;
+                        //         mesh.isVisible = false;
+
+                        //         // mesh.custom.counter += 0.1;
+                        //         // let sf = 1 - mesh.custom.counter;
+                        //         // mesh.scaling.set(sf,sf,sf);
+                        //     }
+                        //     return true;
+                        // }
+
+
+                        // if (m.custom.type === STONE && mesh.custom.type === PLAYER) {
+
+                        //     points_player -= mesh.custom.value;
+
+                        //     m.custom.active = false;
+                        //     mesh.custom.active = false;
+                        //     mesh.custom.dead = true;
+                        //     // mesh.scaling.set(1, 0.5, 1);
+                        //     gameover = true;
+                        //     players_death++;
+                        //     if (players_death >= 3) {
+                        //         deformMesh(mesh_moon);
+                        //         text.message = " [GAME OVER - YOU LOST]"
+                        //     }
+                        //     return true;
+                        // }
+
+                        if (m.custom.type === BULLET_PLAYER && mesh.custom.type === OPONENT) {
+                            if (mesh.custom.active) {
+
+                                points_player += mesh.custom.value;
+
+                                sounds.player_bullet_to_opponent.play();
+
+                                oponent_killed++;
+                                if (oponent_killed >= max_oponents) {
+                                    gameover = true;
+                                    deformMesh(mesh_mothership);
+                                    text.message = " [GAME OVER - YOU WON]"
+
+                                    sounds.you_won.play();
+
+                                    // else if (mesh.custom.type === PLAYER) {
+                                    //     mesh.custom.dead = false;
+                                    //     mesh.custom.active = false;                                
+                                    // }
+                                }
+                            }
+
+                            m.custom.active = false;
+                            mesh.custom.active = false;
+                            return true;
+                        }
+
+                        // if (m.custom.type === STONE && mesh.custom.type === OPONENT) {
+                        //     mesh.custom.delta = { x: (0.5 - Math.random()), y: (0.5 - Math.random()), z: 0 }
+                        //     return true;
+                        // }
+
+
+                        // if (m.custom.type === BULLET_PLAYER && mesh.custom.type === BOSS_OPONENT) {
+                        //     // if (mesh.custom.active) {
+                        //     // mesh.scaling.set(5, 5, 5)
+                        //     // todo: gameover = true;
+                        //     randomChanges(mesh);
+                        //     // }
+
+                        //     // m.custom.active = false;
+                        //     // mesh.custom.active = false;
+
+                        //     points_player += mesh.custom.value;
+                        //     return true;
+                        // }
+
+                        // if (m.custom.type === BULLET_PLAYER && mesh.custom.type === STONE) {
+                        //     m.custom.active = false;
+                        //     mesh.custom.hitFrom = BULLET_PLAYER
+                        //     mesh.custom.active = false;
+                        //     count_stones_play++;
+
+                        //     points_player += mesh.custom.value;
+                        // }
+
+                        // if (m.custom.type === BULLET_OPONENT && mesh.custom.type === STONE) {
+                        //     m.custom.active = false;
+                        //     mesh.custom.hitFrom = BULLET_OPONENT
+                        //     mesh.custom.active = false;
+                        //     count_stones_opponent++;
+                        // }
+
+                        // if (m.custom.type === BULLET_PLAYER && mesh.custom.type === BULLET_OPONENT) {
+                        //     m.custom.active = false;
+                        //     mesh.custom.active = false;
+
+                        //     points_player += mesh.custom.value;
+
+                        //     sounds.player_bullet_to_opponent.play();
+                        // }
+                    }
+                })
+            })
+
+            // Player Animation
+            behaves.push((m) => {
+                if (m.custom.type !== PLAYER) return;
+                if (!m.custom.dead) return;
+
+                m.rotation.x += 0.1;
+                m.rotation.y += 0.1;
+                m.rotation.z += 0.1;
+
+                m.position.x += 0;
+                m.position.y += 0;
+                m.position.z -= 0.5;
+            })
+
+            // Border Kollision Player
+            behaves.push((m) => {
+                if (!m.custom.active) return;
+
+                m.rotation.x += m.custom.rotate.x;
+                m.rotation.y += m.custom.rotate.y;
+                m.rotation.z += m.custom.rotate.z;
+
+                m.position.x += m.custom.delta.x;
+                m.position.y += m.custom.delta.y;
+                m.position.z += m.custom.delta.z;
+
+                if (m.custom.type == PLAYER) {
+                    m.custom.delta.x *= 0.9;
+                    m.custom.delta.y *= 0.9;
+                    m.custom.delta.z *= 0.9;
+
+                    if (m.position.x < -max) {
+                        m.position.x = -max;
+                        // // sounds.beep.play();
+                    }
+                    if (m.position.x > max) {
+                        m.position.x = max;
+                        // sounds.beep.play();
+                    }
+
+                    if (m.position.y < -max) {
+                        m.position.y = -max;
+                        // sounds.beep.play();
+                    }
+
+                    if (m.position.y > max) {
+                        m.position.y = max;
+                        // sounds.beep.play();
+                    }
+                }
+                else if (m.custom.type == OPONENT) {
+                    if (m.position.y < -max) {
+                        m.position.set(m.custom.position.x, m.custom.position.y + max * Math.random(), m.custom.position.z)
+                    }
+                }
+                else {
+
+                    if (m.position.x > max || m.position.x < -max) {
+                        m.custom.delta.x *= -1;
+                        // sounds.beep.play();
+
+                        if (m.custom.counter === 0) return;
+                        m.custom.counter--;
+                        if (m.custom.counter <= 0) {
+                            if (m.custom.type === BULLET_PLAYER || m.custom.type === BULLET_OPONENT) {
+                                m.custom.active = false;
+                            }
+                            m.custom.counter = 1;
+                        }
+                    }
+
+                    if (m.position.y > max || m.position.y < -max) {
+                        m.custom.delta.y *= -1;
+                        // sounds.beep.play();
+
+                        if (m.custom.counter === 0) return;
+                        m.custom.counter--;
+                        if (m.custom.counter <= 0) {
+                            if (m.custom.type === BULLET_PLAYER || m.custom.type === BULLET_OPONENT) {
+                                m.custom.active = false;
+                            }
+                            m.custom.counter = 1;
+                        }
+                    }
+
+
+
+                }
+            })
+
+            // Keyboard
+            behaves.push((m) => {
+
+                if (inputMap["t"]) {
+                    easterEgg = true;
+                }
+
+                // else if (inputMap["e"] && easterEgg) {
+                //     gameover = true;
+                //     deformMesh(mesh_mothership);
+                //     deformMesh(mesh_moon);
+                // }
+                // else if (inputMap["r"] && easterEgg) {
+                //     randomChanges();
+                // }
+                else if (inputMap["c"] && easterEgg) {
+                    camera.attachControl(canvas, true);
+                }
+
+
+                else if (inputMap["1"]) {
+                    setLevel(1)
+                }
+                else if (inputMap["2"]) {
+                    setLevel(2)
+                }
+                else if (inputMap["3"]) {
+                    setLevel(3)
+                }
+                else if (inputMap["4"]) {
+                    setLevel(4)
+                }
+                else if (inputMap["5"]) {
+                    setLevel(5)
+                }
+                else if (inputMap["6"]) {
+                    setLevel(6)
+                }
+
+
+
+                if (!m.custom.active) return;
+                if (m.custom.type !== PLAYER) return;
+
+                if (inputMap["a"] || inputMap["ArrowLeft"]) {
+                    m.custom.delta.x = .4;
+                    m.custom.delta.y = 0;
+                }
+                else if (inputMap["d"] || inputMap["ArrowRight"]) {
+                    m.custom.delta.x = -.4;
+                    m.custom.delta.y = 0;
+                }
+
+                if (inputMap["w"] || inputMap["ArrowUp"]) {
+                    m.custom.delta.x = 0;
+                    m.custom.delta.y = 0.4;
+                }
+
+                else if (inputMap["x"] || inputMap["ArrowDown"]) {
+                    m.custom.delta.x = 0;
+                    m.custom.delta.y = -0.4;
+                }
+                else if (inputMap[" "]) {
+                    player_fired = true;
+                }
+
+
+
+                // if (Math.random() > 0.92)
+                //     oponent_fired = true;
+
+            })
+
+
+            // behaves.push((m) => {
+            //     if (m.custom.type !== PLAYER) return;
+            //     if (m.custom.active) return;
+            //     if (m.custom.dead) return;
+            //     // if (!m.custom["dead"] === null) return;
+
+            //     let s = 1 + 0.25 * Math.sin(time);
+            //     m.scaling.set(s, s, s)
+            // })
+
+            let gameLogic = () => {
+                // sky.sphere.rotation.y += 0.001;
+                sky.sphere.rotation.z += 0.001;
+                mesh_player_fireEngine.rotation.y -= 0.1;
+                mesh_player_fireEngine.scaling.y += 0.05 * Math.sin(time);
+                // materialPlayerFireEngine.alpha = 0.9 + 0.1*Math.random();
+                // sky.sphere.rotation.z += 0.001;
+
+                text.points_player = points_player;
+
+                meshes.forEach((mesh) => {
+                    behaves.forEach((behave) => {
+                        behave(mesh)
+                    });
+                })
+                time += 0.1;
+            }
+
+            // let desiredFps = 3;
+            // let interval = 1000 / (10*desiredFps);
+            let lastTime = performance.now();
+
+            function loop() {
+                divFps.innerHTML = engine.getFps().toFixed() + " fps";
+
+                window.requestAnimationFrame(loop)
+
+                let currentTime = performance.now();
+                const deltaTime = currentTime - lastTime;
+
+                if (deltaTime > interval) {
+                    lastTime = currentTime - (deltaTime % interval);
+                    gameLogic();
+                }
+            }
+            loop();
+
+            scene.onPointerObservable.add(onPointer)
+            function onPointer(pointerInfo) {
+                if (pointerInfo.type == BABYLON.PointerEventTypes.POINTERDOWN) {
+                    player_fired = true;
+                }
+            }
+
+            scene.onPointerDown = function (evt, pickResult) {
+                if (pickResult.hit) {
+                    let mesh = pickResult.pickedMesh;
+                    if (!mesh) return;
+                    if (!mesh.custom) return;
+                    if (!gameover) return;
+
+                    if (mesh.custom.type === PLAYER) {
+                        if (mesh.custom.dead) return;
+                        // mesh.custom.active = true;
+                        // mesh.position.set(0, -max, 0);
+                        // mesh_player = mesh;
+                        // light1.parent = mesh_player;
+                        // light2.parent = mesh_player;
+
+                        gameover = false;
+                        oponent_killed = 0;
+
+                        // mesh_bossoponent.scaling.set(2, 2, 2)
+
+
+                        sounds.player_killed.stop();
+                        // sounds.player_new.stop();
+                        sounds.player_bullet_to_opponent.stop();
+                        sounds.oponent_bullet_to_player.stop();
+                        sounds.you_won.stop();
+                        sounds.you_lost.stop();
+
+
+                        sounds.player_new.play();
+
+
+
+                        meshes.forEach((mesh) => {
+                            // if (mesh.custom.type === STONE) {
+                            //     mesh.scaling.set(1, 1, 1);
+                            //     mesh.position.set(mesh.custom.position.x, mesh.custom.position.y, mesh.custom.position.z)
+                            //     mesh.custom.active = true;
+                            // }
+                            // else 
+                            if (mesh.custom.type === OPONENT) {
+                                // mesh.position.set(0.5 * max - max * Math.random(), 0.5 * max - max * Math.random(), 0);
+                                mesh.position.set(mesh.custom.position.x, mesh.custom.position.y + max * Math.random(), mesh.custom.position.z)
+                                // mesh.custom.delta = { x: 0.25 * (0.5 - Math.random()), y: 0.25 * (0.5 - Math.random()), z: 0 }
+                                mesh.custom.delta = { x: 0, y: -0.5 - 0.5 * Math.random(), z: 0 }
+
+                                mesh.custom.active = true;
+                            }
+                            // else if (mesh.custom.type === PLAYER) {
+                            //     mesh.custom.dead = false;
+                            //     mesh.custom.active = false;                                
+                            // }
+                        })
+
+                        // mesh_player.active = true;
+                        // mesh_player.position.set(mesh_player.custom.position.x, mesh_player.custom.position.y, mesh_player.custom.position.z)
+
+                        mesh.custom.active = true;
+                        mesh.position.set(0, -max, 0);
+                        mesh_player = mesh;
+                        mesh_player_fireEngine.parent = mesh_player;
+
+                        // mesh_player_shield.custom.active = true;
+                        // mesh_player_shield.scaling.set(1, 1, 1);
+                        // mesh_player_shield.isVisible = true;
+                        // mesh_player_shield.custom.counter = 10;
+
+                    }
+                }
+            }
+
+
+            const getWorldPoint = () => {
+                const point = BABYLON.Vector3.Unproject(
+                    new BABYLON.Vector3(scene.pointerX, scene.pointerY, 0),
+                    engine.getRenderWidth(),
+                    engine.getRenderHeight(),
+                    BABYLON.Matrix.Identity(),
+                    scene.getViewMatrix(),
+                    scene.getProjectionMatrix()
+                );
+                point.x *= point.z;
+                point.y *= point.z;
+                point.z = 0;
+
+                return point;
+            };
+
+
+            camera.custom = { x: camera.position.x, y: camera.position.y }
+
+            var point_mouse = new BABYLON.Vector3(0, 0, 0);
+            scene.onPointerObservable.add(function () {
+                var mousePoint = getWorldPoint();
+                // mesh.position.x = mousePoint.x;
+                // mesh.position.y = mousePoint.y;
+                point_mouse.set(mousePoint.x * 10, mousePoint.y * 10, 0);
+
+                // camera.position.set(mousePoint.x * .10, mousePoint.y * .10, 100)
+                // camera.position.x = camera.custom.x + point_mouse.x*0.001;
+                // camera.position.y = camera.custom.y + point_mouse.y*0.001;
+
+
+                // camera.position.x = camera.custom.x + scene.pointerX*0.001;
+                // camera.position.y = camera.custom.y + scene.pointerY*0.001;
+
+            }, BABYLON.PointerEventTypes.POINTERMOVE);
+
+            return scene;
+        }
+
+
+
+
+
+
+        let engine = new BABYLON.Engine(canvas, true, {
+            preserveDrawingBuffer: true,
+            stencil: true
+        });
+        let scene = createScene();
+
+        engine.runRenderLoop(function () {
+            if (scene) {
+                scene.render();
+            }
+        });
+
+        window.addEventListener("resize", function () {
+            engine.resize();
+        });
+    </script>
+
+</body>
+
+</html>
