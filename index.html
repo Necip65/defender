@@ -3,14 +3,14 @@
 
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <title>thin instance wrapper</title>
+    <title>Defender</title>
 
     <script src="https://cdn.babylonjs.com/babylon.js"></script>
     <script src="https://cdn.babylonjs.com/cannon.js"></script>
 
     <script src="https://preview.babylonjs.com/earcut.min.js"></script>
     <script src="https://raw.githack.com/opentypejs/opentype.js/master/dist/opentype.min.js"></script>
-    <!-- <script src="https://preview.babylonjs.com/proceduralTexturesLibrary/babylonjs.proceduralTextures.min.js"></script> -->
+    <script src="./howler.js"></script>
 
     <style>
         html,
@@ -505,9 +505,9 @@
                 let t = 0;
                 scene.registerBeforeRender(function () {
                     t += 0.001;
-                    light_r.position.x = 0.2 * size * Math.cos(1 + 4*t);
-                    light_r.position.y = 0.4 * size * Math.cos(2 + 2*t);
-                    light_r.position.z = 0.8 * size * Math.cos(3 + 3*t);
+                    light_r.position.x = 0.2 * size * Math.cos(1 + 4 * t);
+                    light_r.position.y = 0.4 * size * Math.cos(2 + 2 * t);
+                    light_r.position.z = 0.8 * size * Math.cos(3 + 3 * t);
 
                     light_g.position.x = 0.8 * size * Math.cos(4 + t);
                     light_g.position.y = 0.4 * size * Math.cos(5 + t);
@@ -880,15 +880,25 @@
             // BABYLON.Engine.audioEngine.useCustomUnlockedButton = true;
 
             // https://doc.babylonjs.com/typedoc/classes/babylon.sound
+            // let sounds = {
+            //     // background: new BABYLON.Sound("Music", "sounds/epic_battle_music_1mp3-6275.mp3", scene, null, {loop: false, autoplay: false}),
+            //     player_killed: new BABYLON.Sound("Music", "sounds/524281__tkky__bb-srm-future-hiphop-stab.wav", scene, null, { loop: false, autoplay: false }),
+            //     player_new: new BABYLON.Sound("Music", "sounds/erweckungszauber-7544.mp3", scene, null, { loop: false, autoplay: false }),
+            //     player_bullet_to_opponent: new BABYLON.Sound("Music", "sounds/250127__tim-kahn__portal03.wav", scene, null, { loop: false, autoplay: false }),
+            //     oponent_bullet_to_player: new BABYLON.Sound("Music", "sounds/221000__jalastram__fx024.mp3", scene, null, { loop: false, autoplay: false }),
+            //     you_won: new BABYLON.Sound("Music", "sounds/chonology-of-love-6094.mp3", scene, null, { loop: false, autoplay: false }),
+            //     you_lost: new BABYLON.Sound("Music", "sounds/cinematic-impact-climax-intro-sfx-6072.mp3", scene, null, { loop: false, autoplay: false }),
+            //     beep: new BABYLON.Sound("Music", "sounds/beep-sound-8333.mp3", scene, null, { loop: false, autoplay: false }),
+            // }
+
             let sounds = {
-                // background: new BABYLON.Sound("Music", "sounds/epic_battle_music_1mp3-6275.mp3", scene, null, {loop: false, autoplay: false}),
-                player_killed: new BABYLON.Sound("Music", "sounds/524281__tkky__bb-srm-future-hiphop-stab.wav", scene, null, { loop: false, autoplay: false }),
-                player_new: new BABYLON.Sound("Music", "sounds/erweckungszauber-7544.mp3", scene, null, { loop: false, autoplay: false }),
-                player_bullet_to_opponent: new BABYLON.Sound("Music", "sounds/250127__tim-kahn__portal03.wav", scene, null, { loop: false, autoplay: false }),
-                oponent_bullet_to_player: new BABYLON.Sound("Music", "sounds/221000__jalastram__fx024.mp3", scene, null, { loop: false, autoplay: false }),
-                you_won: new BABYLON.Sound("Music", "sounds/chonology-of-love-6094.mp3", scene, null, { loop: false, autoplay: false }),
-                you_lost: new BABYLON.Sound("Music", "sounds/cinematic-impact-climax-intro-sfx-6072.mp3", scene, null, { loop: false, autoplay: false }),
-                beep: new BABYLON.Sound("Music", "sounds/beep-sound-8333.mp3", scene, null, { loop: false, autoplay: false }),
+                player_killed: new Howl({ src: ["sounds/524281__tkky__bb-srm-future-hiphop-stab.wav"] }),
+                player_new: new Howl({ src: ["sounds/erweckungszauber-7544.mp3"] }),
+                player_bullet_to_opponent: new Howl({ src: ["sounds/250127__tim-kahn__portal03.wav"] }),
+                oponent_bullet_to_player: new Howl({ src: ["sounds/221000__jalastram__fx024.mp3"] }),
+                you_won: new Howl({ src: ["sounds/chonology-of-love-6094.mp3"] }),
+                you_lost: new Howl({ src: ["sounds/cinematic-impact-climax-intro-sfx-6072.mp3"] }),
+                beep: new Howl({ src: ["sounds/beep-sound-8333.mp3"] }),
             }
 
             // let sound_background = new BABYLON.Sound("Music", "sounds/epic_battle_music_1mp3-6275.mp3", scene, null, { loop: false, autoplay: false })
@@ -896,6 +906,11 @@
             // // sound_background.play();
             // sounds.beep.play();
             // BABYLON.Engine.audioEngine.unlock();
+
+            // var sound = new Howl({
+            //     src: ['sounds/524281__tkky__bb-srm-future-hiphop-stab.wav']
+            // });
+            // sound.play();
 
 
             for (let i = 0; i < max_players; i++) {
@@ -979,11 +994,11 @@
             for (let i = 0; i < max_bullets_player; i++) {
                 // m = createMesh();
                 m = BABYLON.Mesh.CreatePolyhedron("", { type: TYPE_BULLET_PLAYER, size: mesh_size }, scene);
-                m.scaling.set(0.8,0.8,0.8);
+                m.scaling.set(0.8, 0.8, 0.8);
                 meshes.push(m)
                 m.material = materialBullet_Player;
                 m.position.set(0, 0, 0);
-                m.position.set(10*max + 4, i * 2, 0);
+                m.position.set(10 * max + 4, i * 2, 0);
                 m.custom = {
                     type: BULLET_PLAYER,
                     active: false,
@@ -1001,10 +1016,10 @@
             for (let i = 0; i < max_bullets_oponent; i++) {
                 // m = createMesh();
                 m = BABYLON.Mesh.CreatePolyhedron("", { type: TYPE_BULLET_OPONENT, size: mesh_size }, scene);
-                m.scaling.set(0.8,0.8,0.8);
+                m.scaling.set(0.8, 0.8, 0.8);
                 meshes.push(m)
                 m.material = materialBullet_Oponent;
-                m.position.set(-max*10 - 4, i * 2, 0);
+                m.position.set(-max * 10 - 4, i * 2, 0);
                 m.custom = {
                     type: BULLET_OPONENT,
                     active: false,
@@ -1217,8 +1232,8 @@
                         m.position.y = -max;
                     }
 
-                    if (m.position.y > -0.5*max) {
-                        m.position.y = -0.5*max;
+                    if (m.position.y > -0.5 * max) {
+                        m.position.y = -0.5 * max;
                     }
 
                     // mesh_player_shield.position.x = m.position.x;
@@ -1884,7 +1899,6 @@
             engine.resize();
         });
     </script>
-
 </body>
 
 </html>
