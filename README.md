@@ -3,4 +3,4 @@ a simple shot game
 
 
 ## live
-https://necips8008.github.io/defender/
+https://necip65.github.io/defender/
